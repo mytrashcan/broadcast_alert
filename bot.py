@@ -4,6 +4,7 @@ import hmac
 import hashlib
 import logging
 import asyncio
+import random
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
@@ -23,7 +24,7 @@ WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "0"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 WEBSUB_SECRET = os.getenv("WEBSUB_SECRET", "bcalert-secret")
 BACKUP_INTERVAL = int(os.getenv("BACKUP_INTERVAL", "300"))
-ALERT_MESSAGE = os.getenv("ALERT_MESSAGE", "🔴 **{channel_name}님이 방송을 시작했습니다!**")
+ALERT_MESSAGE = os.getenv("ALERT_MESSAGE", "🐷 **{channel_name}님이 방송을 시작했습니다!**")
 ALERT_ROLE_ID = os.getenv("ALERT_ROLE_ID", "")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -387,7 +388,11 @@ class AlertBot(commands.Bot):
             embed.set_image(url=info["thumbnail"])
         embed.set_footer(text="YouTube Live Alert")
 
-        msg = ALERT_MESSAGE.format(channel_name=name)
+        if random.random() < 0.1:
+            msg = "🐷🐷🐷🐷🐷"
+        else:
+            msg = ALERT_MESSAGE.format(channel_name=name)
+
         if ALERT_ROLE_ID and not target_channel_id:
             msg = f"<@&{ALERT_ROLE_ID}> {msg}"
 
@@ -420,7 +425,7 @@ async def cmd_status(ctx):
         lines.append("🔔 WebSub: 비활성 (WEBHOOK_PORT 미설정)")
     lines.append(f"⏱️ 백업 체크 주기: {BACKUP_INTERVAL}초")
     if bot.is_live:
-        lines.append(f"🔴 현재 방송 중! https://www.youtube.com/watch?v={bot.current_video_id}")
+        lines.append(f"🐷 현재 방송 중! https://www.youtube.com/watch?v={bot.current_video_id}")
     else:
         lines.append("⬤ 현재 방송 중이 아님")
     await ctx.send("\n".join(lines))
@@ -435,6 +440,16 @@ async def cmd_check(ctx):
         await ctx.send(f"🔴 방송 중: **{info.get('title')}**\n{info.get('url')}")
     else:
         await ctx.send("❌ 현재 방송 중이 아닙니다.")
+
+
+@bot.command(name="61012")
+async def cmd_easter(ctx):
+    pigs = "🐷" * random.randint(20, 50)
+    await ctx.send(pigs)
+    await asyncio.sleep(0.5)
+    await ctx.send(pigs)
+    await asyncio.sleep(0.5)
+    await ctx.send(pigs)
 
 
 @bot.command(name="resub")
