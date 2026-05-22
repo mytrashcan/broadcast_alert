@@ -43,40 +43,17 @@ def _first_match(pattern: str, text: str) -> str:
     return m.group(1) if m else ""
 
 
-async def resolve_channel_id(session: aiohttp.ClientSession, channel_url: str) -> str:
-    try:
-        async with session.get(channel_url, headers=SCRAPE_HEADERS, cookies=CONSENT_COOKIES) as resp:
-            text = await resp.text()
-            match = re.search(r'"externalId":"(UC[^"]+)"', text)
-            if match:
-                return match.group(1)
-            match = re.search(r'"channelId":"(UC[^"]+)"', text)
-            if match:
-                return match.group(1)
-    except Exception as e:
-        log.error(f"Failed to resolve channel ID: {e}")
-    return ""
-
-
-async def check_live_scrape(session: aiohttp.ClientSession, channel_url: str) -> dict | None:
-    url = f"{channel_url}/live"
-    try:
-        async with session.get(url, headers=SCRAPE_HEADERS, cookies=CONSENT_COOKIES) as resp:
-            if resp.status != 200:
-                return None
-            text = await resp.text()
-    except Exception as e:
-        log.error(f"Scrape error: {e}")
-        return None
-
+def _extract_from_video_page(text: str, video_id: str = "") -> dict | None:
+    """Extract stream info from a YouTube video/live page HTML."""
     if '"isLive":true' not in text and '"isLiveNow":true' not in text:
         return None
 
-    video_id = (
-        _first_match(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([^"&]+)"', text)
-        or _first_match(r'"videoDetails":\{"videoId":"([^"]{11})"', text)
-        or _first_match(r'"videoId":"([^"]{11})"', text)
-    )
+    if not video_id:
+        video_id = (
+            _first_match(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([^"&]+)"', text)
+            or _first_match(r'"videoDetails":\{"videoId":"([^"]{11})"', text)
+            or _first_match(r'"videoId":"([^"]{11})"', text)
+        )
     title = (
         _first_match(r'"videoDetails":\{"videoId":"[^"]*","title":"([^"]*)"', text)
         or _first_match(r'<meta name="title" content="([^"]*)"', text)
@@ -92,9 +69,85 @@ async def check_live_scrape(session: aiohttp.ClientSession, channel_url: str) ->
         "title": title or "방송 시작!",
         "channel_name": channel_name or "스트리머",
         "video_id": video_id or "",
-        "url": f"https://www.youtube.com/watch?v={video_id}" if video_id else f"{channel_url}/live",
+        "url": f"https://www.youtube.com/watch?v={video_id}" if video_id else "",
         "thumbnail": thumbnail or "",
     }
+
+
+def _get_vd_channel_id(text: str) -> str:
+    """Extract channelId from the videoDetails section."""
+    vd_start = text.find('"videoDetails":{')
+    if vd_start == -1:
+        return ""
+    chunk = text[vd_start:vd_start + 2000]
+    return _first_match(r'"channelId":"(UC[^"]*)"', chunk)
+
+
+async def resolve_channel_id(session: aiohttp.ClientSession, channel_url: str) -> str:
+    try:
+        async with session.get(channel_url, headers=SCRAPE_HEADERS, cookies=CONSENT_COOKIES) as resp:
+            text = await resp.text()
+            match = re.search(r'"externalId":"(UC[^"]+)"', text)
+            if match:
+                return match.group(1)
+            match = re.search(r'"channelId":"(UC[^"]+)"', text)
+            if match:
+                return match.group(1)
+    except Exception as e:
+        log.error(f"Failed to resolve channel ID: {e}")
+    return ""
+
+
+async def check_live_scrape(session: aiohttp.ClientSession, channel_url: str, expected_channel_id: str = "") -> dict | None:
+    url = f"{channel_url}/live"
+    try:
+        async with session.get(url, headers=SCRAPE_HEADERS, cookies=CONSENT_COOKIES) as resp:
+            if resp.status != 200:
+                return None
+            text = await resp.text()
+    except Exception as e:
+        log.error(f"Scrape error: {e}")
+        return None
+
+    if '"isLive":true' not in text and '"isLiveNow":true' not in text:
+        return None
+
+    if expected_channel_id:
+        page_channel_id = _get_vd_channel_id(text)
+        if page_channel_id and page_channel_id != expected_channel_id:
+            log.warning(f"Channel mismatch: page has {page_channel_id}, expected {expected_channel_id} — trying RSS")
+            return await check_live_rss(session, expected_channel_id)
+
+    return _extract_from_video_page(text)
+
+
+async def check_live_rss(session: aiohttp.ClientSession, channel_id: str) -> dict | None:
+    """Fallback: check the channel's RSS feed for live videos."""
+    feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+    try:
+        async with session.get(feed_url, headers=SCRAPE_HEADERS) as resp:
+            if resp.status != 200:
+                return None
+            xml_text = await resp.text()
+    except Exception as e:
+        log.error(f"RSS fetch error: {e}")
+        return None
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+
+    for entry in root.findall("atom:entry", ATOM_NS)[:5]:
+        vid_elem = entry.find("yt:videoId", ATOM_NS)
+        if vid_elem is None or not vid_elem.text:
+            continue
+        info = await verify_video_is_live(session, vid_elem.text)
+        if info:
+            log.info(f"[RSS] Found live: {vid_elem.text}")
+            return info
+
+    return None
 
 
 async def verify_video_is_live(session: aiohttp.ClientSession, video_id: str) -> dict | None:
@@ -106,27 +159,7 @@ async def verify_video_is_live(session: aiohttp.ClientSession, video_id: str) ->
         log.error(f"Verify error: {e}")
         return None
 
-    if '"isLive":true' not in text and '"isLiveNow":true' not in text:
-        return None
-
-    title = (
-        _first_match(r'"videoDetails":\{"videoId":"[^"]*","title":"([^"]*)"', text)
-        or _first_match(r'<meta name="title" content="([^"]*)"', text)
-        or _first_match(r'<meta property="og:title" content="([^"]*)"', text)
-    )
-    channel_name = (
-        _first_match(r'"ownerChannelName":"([^"]*)"', text)
-        or _first_match(r'"author":"([^"]*)"', text)
-    )
-    thumbnail = _first_match(r'<meta property="og:image" content="([^"]*)"', text)
-
-    return {
-        "title": title or "방송 시작!",
-        "channel_name": channel_name or "스트리머",
-        "video_id": video_id,
-        "url": url,
-        "thumbnail": thumbnail or "",
-    }
+    return _extract_from_video_page(text, video_id)
 
 
 class AlertBot(commands.Bot):
@@ -239,7 +272,6 @@ class AlertBot(commands.Bot):
 
             video_id = vid_elem.text
             title_elem = entry.find("atom:title", ATOM_NS)
-            author_elem = entry.find("atom:author/atom:name", ATOM_NS)
             log.info(f"WebSub: new video {video_id} — '{title_elem.text if title_elem is not None else '?'}'")
 
             if self.is_live and self.current_video_id == video_id:
@@ -290,7 +322,7 @@ class AlertBot(commands.Bot):
     @tasks.loop(seconds=300)
     async def backup_check(self):
         try:
-            info = await check_live_scrape(self.http_session, YOUTUBE_CHANNEL_URL)
+            info = await check_live_scrape(self.http_session, YOUTUBE_CHANNEL_URL, self.resolved_channel_id)
             if info:
                 vid = info.get("video_id")
                 if not self.is_live or self.current_video_id != vid:
@@ -346,7 +378,7 @@ bot = AlertBot()
 async def cmd_test(ctx):
     """현재 방송 상태를 확인하고 이 채널에 테스트 알림을 보냄"""
     await ctx.send("🔍 방송 상태 확인 중...")
-    info = await check_live_scrape(bot.http_session, YOUTUBE_CHANNEL_URL)
+    info = await check_live_scrape(bot.http_session, YOUTUBE_CHANNEL_URL, bot.resolved_channel_id)
     if info:
         await bot._send_alert(info, target_channel_id=ctx.channel.id)
     else:
@@ -375,7 +407,7 @@ async def cmd_status(ctx):
 async def cmd_check(ctx):
     """수동으로 방송 상태 확인"""
     await ctx.send("🔍 확인 중...")
-    info = await check_live_scrape(bot.http_session, YOUTUBE_CHANNEL_URL)
+    info = await check_live_scrape(bot.http_session, YOUTUBE_CHANNEL_URL, bot.resolved_channel_id)
     if info:
         await ctx.send(f"🔴 방송 중: **{info.get('title')}**\n{info.get('url')}")
     else:
