@@ -72,10 +72,20 @@ async def check_live_scrape(session: aiohttp.ClientSession, channel_url: str) ->
     if '"isLive":true' not in text and '"isLiveNow":true' not in text:
         return None
 
-    canonical = re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([^"&]+)"', text)
-    video_id = canonical.group(1) if canonical else _first_match(r'"videoId":"([^"]{11})"', text)
-    title = _first_match(r'<meta name="title" content="([^"]*)"', text)
-    channel_name = _first_match(r'"ownerChannelName":"([^"]*)"', text)
+    video_id = (
+        _first_match(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([^"&]+)"', text)
+        or _first_match(r'"videoDetails":\{"videoId":"([^"]{11})"', text)
+        or _first_match(r'"videoId":"([^"]{11})"', text)
+    )
+    title = (
+        _first_match(r'"videoDetails":\{"videoId":"[^"]*","title":"([^"]*)"', text)
+        or _first_match(r'<meta name="title" content="([^"]*)"', text)
+        or _first_match(r'<meta property="og:title" content="([^"]*)"', text)
+    )
+    channel_name = (
+        _first_match(r'"ownerChannelName":"([^"]*)"', text)
+        or _first_match(r'"author":"([^"]*)"', text)
+    )
     thumbnail = _first_match(r'<meta property="og:image" content="([^"]*)"', text)
 
     return {
@@ -99,8 +109,15 @@ async def verify_video_is_live(session: aiohttp.ClientSession, video_id: str) ->
     if '"isLive":true' not in text and '"isLiveNow":true' not in text:
         return None
 
-    title = _first_match(r'<meta name="title" content="([^"]*)"', text)
-    channel_name = _first_match(r'"ownerChannelName":"([^"]*)"', text)
+    title = (
+        _first_match(r'"videoDetails":\{"videoId":"[^"]*","title":"([^"]*)"', text)
+        or _first_match(r'<meta name="title" content="([^"]*)"', text)
+        or _first_match(r'<meta property="og:title" content="([^"]*)"', text)
+    )
+    channel_name = (
+        _first_match(r'"ownerChannelName":"([^"]*)"', text)
+        or _first_match(r'"author":"([^"]*)"', text)
+    )
     thumbnail = _first_match(r'<meta property="og:image" content="([^"]*)"', text)
 
     return {
