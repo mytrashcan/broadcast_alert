@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+debug_*.py
+debug_*.txt
+quick_test.py
+.claude/
