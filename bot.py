@@ -114,8 +114,8 @@ async def check_live_scrape(session: aiohttp.ClientSession, channel_url: str, ex
 
     if expected_channel_id:
         page_channel_id = _get_vd_channel_id(text)
-        if page_channel_id and page_channel_id != expected_channel_id:
-            log.warning(f"Channel mismatch: page has {page_channel_id}, expected {expected_channel_id} — trying RSS")
+        if page_channel_id != expected_channel_id:
+            log.warning(f"Channel verify failed: got '{page_channel_id}', expected '{expected_channel_id}' — using RSS")
             return await check_live_rss(session, expected_channel_id)
 
     return _extract_from_video_page(text)
