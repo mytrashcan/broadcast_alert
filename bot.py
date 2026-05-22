@@ -142,12 +142,35 @@ async def check_live_rss(session: aiohttp.ClientSession, channel_id: str) -> dic
         vid_elem = entry.find("yt:videoId", ATOM_NS)
         if vid_elem is None or not vid_elem.text:
             continue
-        info = await verify_video_is_live(session, vid_elem.text)
-        if info:
-            log.info(f"[RSS] Found live: {vid_elem.text}")
-            return info
+
+        video_id = vid_elem.text
+        if not await is_video_live(session, video_id):
+            continue
+
+        title_elem = entry.find("atom:title", ATOM_NS)
+        author_elem = entry.find("atom:author/atom:name", ATOM_NS)
+        log.info(f"[RSS] Found live: {video_id}")
+
+        return {
+            "title": title_elem.text if title_elem is not None else "방송 시작!",
+            "channel_name": author_elem.text if author_elem is not None else "스트리머",
+            "video_id": video_id,
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "thumbnail": f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
+        }
 
     return None
+
+
+async def is_video_live(session: aiohttp.ClientSession, video_id: str) -> bool:
+    """Quick check: is this video currently a live stream?"""
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        async with session.get(url, headers=SCRAPE_HEADERS, cookies=CONSENT_COOKIES) as resp:
+            text = await resp.text()
+    except Exception:
+        return False
+    return '"isLive":true' in text or '"isLiveNow":true' in text
 
 
 async def verify_video_is_live(session: aiohttp.ClientSession, video_id: str) -> dict | None:
