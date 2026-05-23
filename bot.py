@@ -6,7 +6,7 @@ import logging
 import asyncio
 import random
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import aiohttp
 from aiohttp import web
@@ -29,6 +29,7 @@ ALERT_ROLE_ID = os.getenv("ALERT_ROLE_ID", "")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("bcalert")
+KST = timezone(timedelta(hours=9))
 
 SCRAPE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -332,6 +333,7 @@ class AlertBot(commands.Bot):
         self._websub_active = False
         self._seen_msg_ids: set[int] = set()
         self._last_alert_time: float = 0
+        self.scheduled_time: datetime | None = None  # 예정 방송 시간 (KST)
 
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -547,6 +549,21 @@ class AlertBot(commands.Bot):
 
         await channel.send(msg, embed=embed)
 
+        # 지각 메시지
+        if self.scheduled_time and not target_channel_id:
+            now_kst = datetime.now(KST)
+            diff = now_kst - self.scheduled_time
+            late_minutes = int(diff.total_seconds() // 60)
+            if late_minutes > 0:
+                hours = late_minutes // 60
+                mins = late_minutes % 60
+                if hours > 0:
+                    late_str = f"{hours}시간 {mins}분" if mins else f"{hours}시간"
+                else:
+                    late_str = f"{mins}분"
+                await channel.send(f"⏰ {late_str} 지각했어요.")
+            self.scheduled_time = None  # 알림 후 자동 초기화
+
 
 bot = AlertBot()
 
@@ -589,6 +606,38 @@ async def cmd_check(ctx):
         await ctx.send(f"🐷 방송 중: **{info.get('title')}** 🐷\n{info.get('url')}")
     else:
         await ctx.send("❌ 현재 방송 중이 아닙니다.")
+
+
+@bot.command(name="예정")
+async def cmd_schedule(ctx, time_str: str = ""):
+    """방송 예정 시간 설정 (예: !예정 14:00) / 해제: !예정 해제"""
+    if not time_str:
+        if bot.scheduled_time:
+            t = bot.scheduled_time.strftime("%H:%M")
+            await ctx.send(f"⏰ 현재 예정 시간: **{t}**")
+        else:
+            await ctx.send("⏰ 설정된 예정 시간이 없습니다.\n사용법: `!예정 14:00`")
+        return
+
+    if time_str in ("해제", "취소", "삭제", "off"):
+        bot.scheduled_time = None
+        await ctx.send("⏰ 예정 시간이 해제되었습니다.")
+        return
+
+    try:
+        parts = time_str.replace("시", ":").replace(".", ":").split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+    except (ValueError, IndexError):
+        await ctx.send("❌ 올바른 형식: `!예정 14:00` 또는 `!예정 14:30`")
+        return
+
+    now_kst = datetime.now(KST)
+    scheduled = now_kst.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    bot.scheduled_time = scheduled
+    await ctx.send(f"⏰ 예정 시간 설정: **{hour:02d}:{minute:02d}**")
 
 
 @bot.command(name="61012")
