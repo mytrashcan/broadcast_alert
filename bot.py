@@ -24,7 +24,7 @@ WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "0"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 WEBSUB_SECRET = os.getenv("WEBSUB_SECRET", "bcalert-secret")
 BACKUP_INTERVAL = int(os.getenv("BACKUP_INTERVAL", "300"))
-ALERT_MESSAGE = os.getenv("ALERT_MESSAGE", "🐷 **{channel_name}님이 방송을 시작했습니다!**")
+ALERT_MESSAGE = os.getenv("ALERT_MESSAGE", "🐷 **{channel_name}님이 방송을 시작했습니다!** 🐷")
 ALERT_ROLE_ID = os.getenv("ALERT_ROLE_ID", "")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -586,7 +586,7 @@ async def cmd_check(ctx):
     await ctx.send("🔍 확인 중...")
     info = await check_live_scrape(bot.http_session, YOUTUBE_CHANNEL_URL, bot.resolved_channel_id)
     if info:
-        await ctx.send(f"🔴 방송 중: **{info.get('title')}**\n{info.get('url')}")
+        await ctx.send(f"🐷 방송 중: **{info.get('title')}** 🐷\n{info.get('url')}")
     else:
         await ctx.send("❌ 현재 방송 중이 아닙니다.")
 
