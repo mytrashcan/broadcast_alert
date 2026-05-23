@@ -84,6 +84,32 @@ def _get_vd_channel_id(text: str) -> str:
     return _first_match(r'"channelId":"(UC[^"]*)"', chunk)
 
 
+async def check_oembed_owner(session: aiohttp.ClientSession, video_id: str, channel_url: str) -> dict | None:
+    """Check if a video belongs to the expected channel via oEmbed API.
+    Returns stream info dict if match, None otherwise."""
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        async with session.get(oembed_url) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+
+        handle = channel_url.rstrip("/").split("/")[-1]  # e.g. "@Parkmis0"
+        author_url = data.get("author_url", "")
+
+        if handle in author_url:
+            return {
+                "title": data.get("title", "방송 시작!"),
+                "channel_name": data.get("author_name", "스트리머"),
+                "video_id": video_id,
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "thumbnail": f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
+            }
+    except Exception as e:
+        log.error(f"oEmbed check error for {video_id}: {e}")
+    return None
+
+
 async def resolve_channel_id(session: aiohttp.ClientSession, channel_url: str) -> str:
     try:
         async with session.get(channel_url, headers=SCRAPE_HEADERS, cookies=CONSENT_COOKIES) as resp:
@@ -113,17 +139,35 @@ async def check_live_scrape(session: aiohttp.ClientSession, channel_url: str, ex
     if '"isLive":true' not in text and '"isLiveNow":true' not in text:
         return None
 
-    if expected_channel_id:
-        page_channel_id = _get_vd_channel_id(text)
-        if page_channel_id != expected_channel_id:
-            log.warning(f"Channel verify failed: got '{page_channel_id}', expected '{expected_channel_id}' — trying RSS")
-            info = await check_live_rss(session, expected_channel_id)
-            if info:
-                return info
-            log.info("RSS has no live video — trying innertube API")
-            return await check_live_innertube(session, expected_channel_id)
+    if not expected_channel_id:
+        return _extract_from_video_page(text)
 
-    return _extract_from_video_page(text)
+    # Fast path: verify via videoDetails channelId (works on Korean IP)
+    page_channel_id = _get_vd_channel_id(text)
+    if page_channel_id == expected_channel_id:
+        return _extract_from_video_page(text)
+
+    # Overseas/Oracle path: oEmbed verification for each videoId on the page
+    log.info(f"Channel verify: got '{page_channel_id}', expected '{expected_channel_id}' — trying oEmbed")
+    all_vids = list(dict.fromkeys(re.findall(r'"videoId":"([^"]{11})"', text)))
+    for vid in all_vids[:10]:
+        info = await check_oembed_owner(session, vid, channel_url)
+        if info:
+            if await is_video_live(session, vid):
+                log.info(f"[oEmbed] Found live: {vid} — {info['title']}")
+                return info
+            else:
+                log.info(f"[oEmbed] {vid} matches channel but not live")
+
+    # Fallback: RSS feed
+    log.info("oEmbed found no live match — trying RSS")
+    info = await check_live_rss(session, expected_channel_id)
+    if info:
+        return info
+
+    # Last resort: innertube API
+    log.info("RSS no match — trying innertube")
+    return await check_live_innertube(session, expected_channel_id)
 
 
 async def check_live_rss(session: aiohttp.ClientSession, channel_id: str) -> dict | None:
