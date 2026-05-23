@@ -116,8 +116,12 @@ async def check_live_scrape(session: aiohttp.ClientSession, channel_url: str, ex
     if expected_channel_id:
         page_channel_id = _get_vd_channel_id(text)
         if page_channel_id != expected_channel_id:
-            log.warning(f"Channel verify failed: got '{page_channel_id}', expected '{expected_channel_id}' — using RSS")
-            return await check_live_rss(session, expected_channel_id)
+            log.warning(f"Channel verify failed: got '{page_channel_id}', expected '{expected_channel_id}' — trying RSS")
+            info = await check_live_rss(session, expected_channel_id)
+            if info:
+                return info
+            log.info("RSS has no live video — trying innertube API")
+            return await check_live_innertube(session, expected_channel_id)
 
     return _extract_from_video_page(text)
 
@@ -161,6 +165,91 @@ async def check_live_rss(session: aiohttp.ClientSession, channel_id: str) -> dic
         }
 
     return None
+
+
+async def check_live_innertube(session: aiohttp.ClientSession, channel_id: str) -> dict | None:
+    """Fallback: use YouTube's internal browse API (region-independent)."""
+    payload = {
+        "context": {
+            "client": {
+                "clientName": "WEB",
+                "clientVersion": "2.20250523.00.00",
+                "hl": "ko",
+                "gl": "KR",
+            }
+        },
+        "browseId": channel_id,
+    }
+    try:
+        async with session.post(
+            "https://www.youtube.com/youtubei/v1/browse",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        ) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+    except Exception as e:
+        log.error(f"Innertube error: {e}")
+        return None
+
+    result = _find_live_in_json(data)
+    if not result:
+        return None
+
+    video_id, title = result
+    channel_name = _extract_channel_name(data)
+    log.info(f"[Innertube] Found live: {video_id}")
+
+    return {
+        "title": title or "방송 시작!",
+        "channel_name": channel_name or "스트리머",
+        "video_id": video_id,
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "thumbnail": f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
+    }
+
+
+def _find_live_in_json(obj):
+    """Recursively find a videoRenderer with BADGE_STYLE_TYPE_LIVE_NOW."""
+    if isinstance(obj, dict):
+        if "videoRenderer" in obj:
+            vr = obj["videoRenderer"]
+            for badge in vr.get("badges", []):
+                style = badge.get("metadataBadgeRenderer", {}).get("style", "")
+                if style == "BADGE_STYLE_TYPE_LIVE_NOW":
+                    vid = vr.get("videoId", "")
+                    runs = vr.get("title", {}).get("runs", [])
+                    title = runs[0].get("text", "") if runs else ""
+                    if vid:
+                        return (vid, title)
+        for val in obj.values():
+            r = _find_live_in_json(val)
+            if r:
+                return r
+    elif isinstance(obj, list):
+        for item in obj:
+            r = _find_live_in_json(item)
+            if r:
+                return r
+    return None
+
+
+def _extract_channel_name(data: dict) -> str:
+    """Extract channel name from innertube browse response."""
+    header = data.get("header", {})
+    for key in ["c4TabbedHeaderRenderer", "pageHeaderRenderer"]:
+        if key not in header:
+            continue
+        h = header[key]
+        if "title" in h and isinstance(h["title"], str):
+            return h["title"]
+        try:
+            content = h["content"]["pageHeaderViewModel"]["title"]["dynamicTextViewModel"]["text"]
+            return content.get("content", "")
+        except (KeyError, TypeError):
+            pass
+    return ""
 
 
 async def is_video_live(session: aiohttp.ClientSession, video_id: str) -> bool:
