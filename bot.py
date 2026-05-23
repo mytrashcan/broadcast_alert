@@ -198,6 +198,7 @@ class AlertBot(commands.Bot):
         self._webhook_runner: web.AppRunner | None = None
         self._websub_active = False
         self._seen_msg_ids: set[int] = set()
+        self._last_alert_time: float = 0
 
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -296,20 +297,28 @@ class AlertBot(commands.Bot):
 
             video_id = vid_elem.text
             title_elem = entry.find("atom:title", ATOM_NS)
+            author_elem = entry.find("atom:author/atom:name", ATOM_NS)
             log.info(f"WebSub: new video {video_id} — '{title_elem.text if title_elem is not None else '?'}'")
 
             if self.is_live and self.current_video_id == video_id:
                 log.info("WebSub: already tracking this stream, skipping")
                 continue
 
-            info = await verify_video_is_live(self.http_session, video_id)
-            if info:
-                self.is_live = True
-                self.current_video_id = video_id
-                await self._send_alert(info)
-                log.info(f"[WebSub] LIVE alert sent: {info.get('title')}")
-            else:
+            if not await is_video_live(self.http_session, video_id):
                 log.info(f"WebSub: video {video_id} is not a live stream")
+                continue
+
+            info = {
+                "title": title_elem.text if title_elem is not None else "방송 시작!",
+                "channel_name": author_elem.text if author_elem is not None else "스트리머",
+                "video_id": video_id,
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "thumbnail": f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
+            }
+            self.is_live = True
+            self.current_video_id = video_id
+            await self._send_alert(info)
+            log.info(f"[WebSub] LIVE alert sent: {info.get('title')}")
 
     # ── WebSub Subscription Management ──
 
@@ -369,6 +378,13 @@ class AlertBot(commands.Bot):
     # ── Alert Sending ──
 
     async def _send_alert(self, info: dict, target_channel_id: int = 0):
+        now = asyncio.get_event_loop().time()
+        if not target_channel_id and now - self._last_alert_time < 60:
+            log.info("Alert cooldown active, skipping duplicate")
+            return
+        if not target_channel_id:
+            self._last_alert_time = now
+
         ch_id = target_channel_id or DISCORD_CHANNEL_ID
         channel = self.get_channel(ch_id)
         if not channel:
